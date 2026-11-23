@@ -64,7 +64,7 @@ const tabButton = document.querySelector('#studio-tab');
 if (privateMode) tabButton.textContent = '在新标签页打开当前图纸';
 if (privateMode === 'local') document.querySelector('#catalog-link').href = '/knitting/christmas-colorwork.html';
 const payload = document.querySelector('#payload');
-const idFormat = /^0[1-7]-(?:\d{2}|1\d{2}|200)-(?:0[1-9]|[1-9]\d)$/;
+const idFormat = /^0[1-8]-(?:\d{2}|1\d{2}|200)-(?:0[1-9]|[1-9]\d)$/;
 
 function decode(fragment) {
   if (fragment.length > 4000 || !/^[A-Za-z0-9_-]+$/.test(fragment)) throw Error('修改单格式有误。');
