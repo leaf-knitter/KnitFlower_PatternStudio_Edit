@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>编辑提花图纸</title>
+<style>
+:root { color-scheme: light; font: 1rem/1.6 system-ui, sans-serif; background: #f7f6f1; color: #252922; }
+body { max-width: 90rem; margin: 1.5rem auto; padding-inline: 1rem; }
+header, #handoff, #submission { max-width: 44rem; }
+#studio-frame { display: block; width: 100%; height: max(72vh, 650px); border: 1px solid #d6d6ce; border-radius: .75rem; background: #fff; }
+#handoff, #submission { margin-top: 1rem; }
+summary { cursor: pointer; }
+section { background: #fff; border: 1px solid #d6d6ce; border-radius: .75rem; padding: 1rem; }
+textarea { box-sizing: border-box; width: 100%; min-height: 8rem; }
+button, textarea { font: inherit; }
+button { padding: .35rem .65rem; cursor: pointer; }
+a { color: #29504a; }
+</style>
+<header>
+  <p><a id="catalog-link" href="https://github.com/leaf-knitter/interests/blob/main/knitting/christmas-colorwork.md">返回图纸目录</a></p>
+  <h1 id="title">回传提花图纸</h1>
+  <p id="status" role="status">正在读取图纸…</p>
+</header>
+<main>
+  <section id="source-picker" hidden>
+    <h2>选择原图 JSON</h2>
+    <p>在私有仓库下载原图 JSON，再在这里选取。文件会在浏览器中读取。</p>
+    <label for="original-file">原图 JSON</label>
+    <input type="file" id="original-file" accept=".json,application/json">
+  </section>
+  <div id="workbench" hidden>
+    <p><button type="button" id="studio-tab">在原站的新标签页打开当前图纸</button></p>
+    <iframe id="studio-frame" title="KnitFlower Pattern Studio 图纸编辑器"></iframe>
+  </div>
+  <details id="handoff" hidden>
+    <summary>通过 JSON 文件导入与回传</summary>
+    <ol>
+      <li>下载这张图纸的编辑版 JSON。</li>
+      <li>打开原站，选择 <b>Add Pattern → Import JSON</b>，载入文件。</li>
+      <li>修改后使用 <b>Chart → Export</b> 导出 JSON，再回到本页选取该文件。请保留导入的图纸名称。</li>
+    </ol>
+    <p><button type="button" id="source-json" disabled>下载编辑版 JSON</button> · <a id="studio" href="https://leaf-knitter.github.io/KnitFlower_PatternStudio/" target="_blank" rel="noopener">打开 Pattern Studio 原站</a></p>
+    <label for="studio-export">选取原站导出的 JSON</label>
+    <input id="studio-export" type="file" accept=".json,application/json" disabled>
+  </details>
+  <section id="submission" hidden>
+    <label for="payload">GitHub 修改单</label>
+    <textarea id="payload" readonly></textarea>
+    <p><button id="copy" type="button">复制修改单</button></p>
+    <p>在 GitHub 选择 <b>Run workflow</b>，把修改单粘贴到输入框并运行。工作流会检查图纸版本，再更新图纸和 JSON。</p>
+    <a href="https://github.com/leaf-knitter/interests/actions/workflows/update-knitting-chart.yml" target="_blank" rel="noopener">打开 GitHub 更新工作流</a>
+  </section>
+</main>
+<noscript>请启用 JavaScript 读取回传内容。</noscript>
+<script type="module">
+let id = new URLSearchParams(location.search).get('chart');
+const status = document.querySelector('#status');
+const privateMode = document.querySelector('meta[name="interests-private-editor"]')?.content;
+const studioUrl = new URL('/KnitFlower_PatternStudio/',
+  privateMode ? location.origin : 'https://leaf-knitter.github.io');
+const workbench = document.querySelector('#workbench');
+const frame = document.querySelector('#studio-frame');
+const tabButton = document.querySelector('#studio-tab');
+if (privateMode) tabButton.textContent = '在新标签页打开当前图纸';
+if (privateMode === 'local') document.querySelector('#catalog-link').href = '/knitting/christmas-colorwork.html';
+const payload = document.querySelector('#payload');
+const idFormat = /^0[1-6]-(?:\d{2}|1\d{2}|200)-(?:0[1-9]|[1-9]\d)$/;
+
+function decode(fragment) {
+  if (fragment.length > 4000 || !/^[A-Za-z0-9_-]+$/.test(fragment)) throw Error('修改单格式有误。');
+  const encoded = fragment.replaceAll('-', '+').replaceAll('_', '/');
+  const data = JSON.parse(atob(encoded));
+  const {v, chart, base, palette, rows} = data;
+  if (v !== 1 || chart !== id || !/^[0-9a-f]{64}$/.test(base)) throw Error('修改单与当前图纸不匹配。');
+  if (!Array.isArray(palette) || palette.length < 1 || palette.length > 32
+      || palette.some(color => typeof color !== 'string' || !/^#[0-9a-f]{6}$/.test(color))
+      || !Array.isArray(rows) || rows.length < 1 || rows.length > 40
+      || rows.some(row => typeof row !== 'string' || row.length < 1 || row.length > 30
+          || row.length !== rows[0].length || !/^[0-9a-v]+$/.test(row)
+          || [...row].some(index => parseInt(index, 32) >= palette.length))) {
+    throw Error('修改单中的针目或颜色无效。');
+  }
+  return {chart, base, grid: rows.map(row => [...row].map(index => palette[parseInt(index, 32)]))};
+}
+
+function showSubmission(change) {
+  payload.value = JSON.stringify(change);
+  document.querySelector('#submission').hidden = false;
+  status.textContent = '已收到 Pattern Studio 的修改，共 ' + change.grid[0].length + ' 针 × ' + change.grid.length + ' 行。';
+  document.querySelector('#submission').scrollIntoView({block: 'nearest'});
+}
+
+function hexFromRgb(value) {
+  const rgb = /^rgb\((\d{1,3}),(\d{1,3}),(\d{1,3})\)$/.exec(value);
+  if (!rgb || rgb.slice(1).some(channel => Number(channel) > 255)) throw Error('文件含有不支持的颜色。');
+  return '#' + rgb.slice(1).map(channel => Number(channel).toString(16).padStart(2, '0')).join('');
+}
+
+function coordinateReturn(edited, source, base) {
+  const {rows, cols} = source;
+  if (edited.type !== 'blueprint' || edited.version !== '1.1' || edited.rows !== rows || edited.cols !== cols
+      || !Array.isArray(edited.gridColors) || edited.gridColors.length !== rows
+      || edited.gridColors.some(row => !Array.isArray(row) || row.length !== cols)) {
+    throw Error('请提交原尺寸的 Pattern Studio Blueprint。');
+  }
+  const grid = edited.gridColors.map(row => row.map(value =>
+    value === 'rgba(0,0,0,0)' ? '#e6ddec' : hexFromRgb(value)));
+  if (new Set(grid.flat()).size > 32) throw Error('每张图纸最多支持 32 种颜色。');
+  showSubmission({chart: id, base, grid});
+}
+
+async function exportFromStudio(target) {
+  let result;
+  const download = target.downloadBlob;
+  try {
+    target.downloadBlob = blob => { result = blob; };
+    target.exportChartJson();
+  } finally {
+    target.downloadBlob = download;
+  }
+  if (!result) throw Error('Pattern Studio 未能生成 JSON。');
+  return JSON.parse(await result.text());
+}
+
+function connectStudio(target, blueprint, source, base) {
+  if (target.location.origin !== studioUrl.origin || target.location.pathname !== studioUrl.pathname
+      || typeof target.parsePatternJson !== 'function' || typeof target.applyImportedPattern !== 'function'
+      || typeof target.exportChartJson !== 'function' || typeof target.downloadBlob !== 'function') {
+    throw Error('未能连接原站编辑器。可以使用下方的 JSON 导入与回传。');
+  }
+  const doc = target.document;
+  const save = doc.querySelector('button[onclick="savePattern()"]');
+  if (!save) throw Error('未找到原站的保存按钮。请使用下方的 JSON 导入与回传。');
+  const {pattern, stitchSize} = target.parsePatternJson(JSON.stringify(blueprint));
+  const recordEdit = target.recordEdit;
+  try {
+    // Importing the catalog chart must not leave the independent draft in Undo.
+    target.recordEdit = () => {};
+    target.applyImportedPattern(pattern, stitchSize);
+  } finally {
+    target.recordEdit = recordEdit;
+  }
+  // Keep this catalog session separate from the standalone Studio save.
+  for (const control of doc.querySelectorAll('#addPatternButton, #patternName, #rows, #cols, button[onclick="newPattern()"]')) {
+    control.disabled = true;
+  }
+  save.removeAttribute('onclick');
+  save.textContent = '回传到 interests';
+  save.addEventListener('click', async () => {
+    try {
+      const edited = await exportFromStudio(target);
+      if (edited.name !== source.name) throw Error('当前图纸与目录编号不匹配。');
+      coordinateReturn(edited, source, base);
+      target.showToast?.('已回传修改单，请在 interests 确认提交。');
+      if (target !== frame.contentWindow) window.focus();
+    } catch (error) {
+      status.textContent = error.message;
+      target.showToast?.(error.message);
+    }
+  });
+}
+
+function openStudio(source, base) {
+  workbench.hidden = false;
+  let connected = false;
+  const handoff = document.querySelector('#handoff');
+  const timeout = setTimeout(() => {
+    if (connected) return;
+    handoff.open = true;
+    status.textContent = '原站内嵌窗口加载超时。可尝试在新标签页打开，或使用 JSON 交接。';
+  }, 12_000);
+  frame.addEventListener('load', () => {
+    clearTimeout(timeout);
+    try {
+      connectStudio(frame.contentWindow, source, source, base);
+      connected = true;
+      status.textContent = '已在 Pattern Studio 载入 · ' + source.cols + ' 针 × ' + source.rows + ' 行。';
+    } catch {
+      handoff.open = true;
+      status.textContent = '原站未能在内嵌窗口打开。可尝试在新标签页打开，或使用 JSON 交接。';
+    }
+  }, {once: true});
+  frame.src = studioUrl.href;
+
+  tabButton.addEventListener('click', async () => {
+    const tab = window.open(studioUrl.href, '_blank');
+    if (!tab) {
+      status.textContent = '浏览器拦截了新标签页，可以继续在本页编辑。';
+      return;
+    }
+    try {
+      const blueprint = connected ? await exportFromStudio(frame.contentWindow) : source;
+      for (let attempt = 0; attempt < 120 && !tab.closed; attempt++) {
+        if (tab.location.origin === studioUrl.origin && tab.location.pathname === studioUrl.pathname
+            && tab.document.readyState === 'complete' && typeof tab.parsePatternJson === 'function') {
+          connectStudio(tab, blueprint, source, base);
+          status.textContent = '已在新标签页打开当前图纸。';
+          return;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      if (!tab.closed) throw Error('原站没有及时载入图纸，请使用下方的 JSON 导入。');
+    } catch {
+      handoff.open = true;
+      status.textContent = '未能在新标签页载入图纸，请使用下方的 JSON 导入。';
+    }
+  });
+}
+
+function parseSource(bytes) {
+  const source = JSON.parse(new TextDecoder().decode(bytes));
+  const {rows, cols, name, gridColors, cellWidth, cellHeight} = source;
+  if (source.type !== 'blueprint' || source.version !== '1.1'
+      || typeof name !== 'string' || !name
+      || !Number.isInteger(rows) || rows < 1 || rows > 40
+      || !Number.isInteger(cols) || cols < 1 || cols > 30
+      || ![cellWidth, cellHeight].every(size => Number.isInteger(size) && size >= 8 && size <= 120)
+      || !Array.isArray(gridColors) || gridColors.length !== rows
+      || gridColors.some(row => !Array.isArray(row) || row.length !== cols)) {
+    throw Error('请选择从 interests 下载的 Blueprint 1.1 原图。');
+  }
+  gridColors.forEach(row => row.forEach(hexFromRgb));
+  return source;
+}
+
+async function prepareImport(bytes, source) {
+  const handoff = document.querySelector('#handoff');
+  const download = document.querySelector('#source-json');
+  const fileInput = document.querySelector('#studio-export');
+  handoff.hidden = false;
+  const {rows, cols, name} = source;
+  const base = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), n => n.toString(16).padStart(2, '0')).join('');
+  document.querySelector('#title').textContent = id + ' · ' + name;
+  status.textContent = cols + ' 针 × ' + rows + ' 行。';
+  if (location.origin === studioUrl.origin) {
+    status.textContent = '正在 Pattern Studio 打开这张图纸…';
+    openStudio(source, base);
+  } else {
+    handoff.open = true;
+    status.textContent += ' 本地预览可用下方的 JSON 导入。';
+  }
+
+  const prefix = id + ' · ' + name + ' · interests:';
+  download.addEventListener('click', () => {
+    const workFile = {...source, name: prefix + base};
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob([JSON.stringify(workFile, null, 2)], {type: 'application/json'}));
+    link.download = id + '-studio.json';
+    link.click();
+    // The browser consumes the Blob URL asynchronously during navigation.
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  });
+  fileInput.addEventListener('change', async event => {
+    const file = event.target.files[0];
+    if (!file) return;
+    event.target.value = '';
+    document.querySelector('#submission').hidden = true;
+    payload.value = '';
+    try {
+      if (file.size > 100_000) throw Error('图纸 JSON 文件过大。');
+      const edited = JSON.parse(await file.text());
+      if (typeof edited.name !== 'string' || !edited.name.startsWith(prefix)
+          || !/^[0-9a-f]{64}$/.test(edited.name.slice(prefix.length))) {
+        throw Error('文件与当前图纸不匹配。请导入本页下载的编辑版 JSON，并保留图纸名称。');
+      }
+      if (edited.name.slice(prefix.length) !== base) {
+        throw Error('这张图纸已在 GitHub 更新，请重新打开本页，以最新版本修改。');
+      }
+      coordinateReturn(edited, source, base);
+    } catch (error) { status.textContent = error.message; }
+  });
+  download.disabled = false;
+  fileInput.disabled = false;
+}
+
+async function readPrivateSource() {
+  const response = await fetch('jsondoc/' + id + '.json', {cache: 'no-store'});
+  if (privateMode === 'github' && response.status === 401) {
+    status.textContent = '正在连接 GitHub 授权…';
+    location.replace('/auth/github?chart=' + id);
+    return;
+  }
+  if (privateMode === 'github' && response.status === 403) {
+    throw Error('无法读取私有图纸，请检查 GitHub 仓库权限和 GitHub App 安装范围。');
+  }
+  if (!response.ok) throw Error('原图读取失败（HTTP ' + response.status + '）。');
+  const bytes = await response.arrayBuffer();
+  await prepareImport(bytes, parseSource(bytes));
+}
+
+function selectLocalSource() {
+  const picker = document.querySelector('#source-picker');
+  const pickerInput = document.querySelector('#original-file');
+  picker.hidden = false;
+  status.textContent = id ? '请选取 ' + id + '.json。' : '请选择从图纸目录下载的原图 JSON。';
+  pickerInput.addEventListener('change', async () => {
+    const file = pickerInput.files[0];
+    pickerInput.value = '';
+    if (!file) return;
+    pickerInput.disabled = true;
+    try {
+      const chosen = /^([0-9-]+)(?: \(\d+\))?\.json$/i.exec(file.name)?.[1];
+      if (!idFormat.test(chosen || '') || (id && chosen !== id)) {
+        throw Error('请选择当前图纸的原始 JSON，例如 01-101-01.json。');
+      }
+      if (file.size > 100_000) throw Error('图纸 JSON 文件过大。');
+      const bytes = await file.arrayBuffer();
+      const source = parseSource(bytes);
+      id = chosen;
+      await prepareImport(bytes, source);
+      picker.hidden = true;
+    } catch (error) {
+      status.textContent = error.message;
+      pickerInput.disabled = false;
+    }
+  });
+}
+
+function start() {
+  if ((id || privateMode) && !idFormat.test(id || '')) throw Error('请从图纸目录打开编辑入口。');
+  if (id) document.querySelector('#title').textContent = '回传图纸 ' + id;
+
+  const fromStudio = new URLSearchParams(location.hash.slice(1)).get('edit');
+  const cacheKey = 'interests-edit-' + id;
+  let draft = fromStudio;
+  if (!draft) {
+    try { draft = sessionStorage.getItem(cacheKey); } catch {}
+  }
+  if (!draft) {
+    if (privateMode) readPrivateSource().catch(error => { status.textContent = error.message; });
+    else selectLocalSource();
+    return;
+  }
+  const change = decode(draft);
+  if (fromStudio) {
+    try { sessionStorage.setItem(cacheKey, draft); history.replaceState(null, '', location.pathname + location.search); } catch {}
+  }
+  showSubmission(change);
+}
+document.querySelector('#copy').addEventListener('click', async () => {
+  payload.focus();
+  payload.select();
+  try {
+    await navigator.clipboard.writeText(payload.value);
+    status.textContent = '修改单已复制，可以到 GitHub 提交。';
+  } catch {
+    status.textContent = '修改单已选中，请使用键盘复制。';
+  }
+});
+try { start(); } catch (error) { status.textContent = error.message; }
+</script>
+</html>
